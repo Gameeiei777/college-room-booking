@@ -6,69 +6,114 @@ if (!isset($_SESSION['user_id']) || ($_SESSION['role'] ?? '') !== 'teacher') {
     exit;
 }
 
-$roomType = trim($_GET['room_type'] ?? 'all');
-$bookingDate = trim($_GET['booking_date'] ?? '');
-$timeSlot = trim($_GET['time_slot'] ?? '');
-$capacityFilter = trim($_GET['capacity'] ?? '');
+$userId = (int) $_SESSION['user_id'];
+$userName = trim((string) ($_SESSION['full_name'] ?? 'ผู้ใช้งาน'));
+$selectedType = trim((string) ($_GET['room_type'] ?? 'all'));
+if (!in_array($selectedType, ['all', 'ห้องประชุม', 'ห้องคอมพิวเตอร์'], true)) {
+    $selectedType = 'all';
+}
+
+if ($conn && $userId > 0) {
+    $uCheck = $conn->query("SHOW TABLES LIKE 'users'");
+    if ($uCheck && $uCheck->num_rows > 0) {
+        $uStmt = $conn->prepare('SELECT full_name FROM users WHERE id = ? LIMIT 1');
+        if ($uStmt) {
+            $uStmt->bind_param('i', $userId);
+            $uStmt->execute();
+            $uRes = $uStmt->get_result();
+            if ($uRow = $uRes->fetch_assoc()) {
+                if (!empty($uRow['full_name'])) {
+                    $userName = trim((string) $uRow['full_name']);
+                }
+            }
+            $uStmt->close();
+        }
+    }
+}
+
+function resolveDashboardRoomImage(?string $img): string
+{
+    $img = trim((string) $img);
+    if ($img === '') {
+        return '';
+    }
+    if (preg_match('#^https?://#i', $img)) {
+        return $img;
+    }
+    $clean = ltrim($img, '/\\');
+    if (file_exists(__DIR__ . '/' . $clean)) {
+        return $clean;
+    }
+    if (file_exists(__DIR__ . '/uploads/rooms/' . basename($clean))) {
+        return 'uploads/rooms/' . basename($clean);
+    }
+    return '';
+}
+
+function detectDashboardRoomType(string $rawType, string $roomName, string $details): string
+{
+    $norm = trim($rawType);
+    if ($norm === 'ห้องคอมพิวเตอร์' || mb_strpos(mb_strtolower($norm), 'คอม') !== false) {
+        return 'ห้องคอมพิวเตอร์';
+    }
+    if ($norm === 'ห้องประชุม' || mb_strpos(mb_strtolower($norm), 'ประชุม') !== false) {
+        return 'ห้องประชุม';
+    }
+    $combined = mb_strtolower($roomName . ' ' . $details);
+    if (mb_strpos($combined, 'คอมพิวเตอร์') !== false || mb_strpos($combined, 'คอม') !== false) {
+        return 'ห้องคอมพิวเตอร์';
+    }
+    return 'ห้องประชุม';
+}
+
+function getDashboardRoomStatus(string $rawStatus): array
+{
+    $norm = mb_strtolower(trim($rawStatus));
+    if (in_array($norm, ['maintenance', 'unavailable', 'closed', 'ปิดปรับปรุง', 'ไม่ว่าง'], true)) {
+        return ['label' => 'ปิดปรับปรุง', 'can_book' => false];
+    }
+    return ['label' => 'พร้อมใช้งาน', 'can_book' => true];
+}
+
+$roomCols = [];
+if ($conn) {
+    $rcRes = $conn->query("SHOW COLUMNS FROM `rooms`");
+    if ($rcRes) {
+        while ($rcRow = $rcRes->fetch_assoc()) {
+            $roomCols[$rcRow['Field']] = true;
+        }
+    }
+}
+$hasRoomTypeCol = isset($roomCols['room_type']);
 
 $rooms = [];
-$sql = 'SELECT id, building_name, room_name, details, capacity, room_image, status FROM rooms WHERE 1=1';
-$params = [];
-$types = '';
-
-if ($roomType !== '' && $roomType !== 'all') {
-    $sql .= ' AND (room_name LIKE ? OR details LIKE ?)';
-    $likeType = '%' . $roomType . '%';
-    $params[] = $likeType;
-    $params[] = $likeType;
-    $types .= 'ss';
-}
-
-if ($capacityFilter !== '' && is_numeric($capacityFilter)) {
-    $sql .= ' AND capacity >= ?';
-    $params[] = (int) $capacityFilter;
-    $types .= 'i';
-}
-
-$sql .= ' ORDER BY id ASC';
-
-$stmt = $conn->prepare($sql);
-if ($stmt) {
-    if ($types !== '') {
-        $stmt->bind_param($types, ...$params);
+if ($conn) {
+    $sql = $hasRoomTypeCol
+        ? 'SELECT id, building_name, room_name, room_type, details, capacity, room_image, status FROM rooms ORDER BY id ASC'
+        : 'SELECT id, building_name, room_name, details, capacity, room_image, status FROM rooms ORDER BY id ASC';
+    $res = $conn->query($sql);
+    if ($res) {
+        while ($r = $res->fetch_assoc()) {
+            $roomTypeLabel = detectDashboardRoomType(
+                (string) ($r['room_type'] ?? ''),
+                (string) ($r['room_name'] ?? ''),
+                (string) ($r['details'] ?? '')
+            );
+            if ($selectedType !== 'all' && $roomTypeLabel !== $selectedType) {
+                continue;
+            }
+            $rooms[] = [
+                'id' => (int) ($r['id'] ?? 0),
+                'room_name' => (string) ($r['room_name'] ?? ''),
+                'room_type' => $roomTypeLabel,
+                'building_name' => (string) ($r['building_name'] ?? ''),
+                'capacity' => (int) ($r['capacity'] ?? 0),
+                'room_image' => (string) ($r['room_image'] ?? ''),
+                'status' => (string) ($r['status'] ?? 'available'),
+            ];
+        }
     }
-    $stmt->execute();
-    $result = $stmt->get_result();
-    while ($row = $result->fetch_assoc()) {
-        $rooms[] = $row;
-    }
-    $stmt->close();
 }
-
-if (empty($rooms) && $roomType === 'all' && $capacityFilter === '') {
-    $rooms = [
-        [
-            'id' => 1,
-            'building_name' => 'อาคาร 1',
-            'room_name' => 'ห้องประชุม 1',
-            'details' => 'ห้องประชุมขนาดกลาง พร้อมโปรเจกเตอร์และระบบเสียง',
-            'capacity' => 30,
-            'room_image' => 'room1.jpg',
-            'status' => 'available',
-        ],
-        [
-            'id' => 2,
-            'building_name' => 'อาคาร 1',
-            'room_name' => 'ห้องประชุม 2',
-            'details' => 'ห้องประชุมรูปตัวยู พร้อมไมโครโฟนและจอแสดงผล',
-            'capacity' => 40,
-            'room_image' => 'room2.jpg',
-            'status' => 'available',
-        ],
-    ];
-}
-
-$userName = $_SESSION['full_name'] ?? 'เกม';
 ?>
 <!DOCTYPE html>
 <html lang="th">
@@ -84,12 +129,12 @@ $userName = $_SESSION['full_name'] ?? 'เกม';
         body { font-family: 'Prompt', sans-serif; }
     </style>
 </head>
-<body class="min-h-screen bg-[#fdf6f2] text-slate-900 flex flex-col">
+<body class="min-h-screen bg-[#fdf5f4] text-slate-900 flex flex-col">
 
     <!-- Top Navbar -->
     <header class="bg-white shadow-sm border-b border-slate-200">
         <div class="mx-auto flex h-24 max-w-7xl items-center justify-between px-6 sm:px-8">
-            <div class="flex items-center gap-4">
+            <a href="teacher_dashboard.php" class="flex items-center gap-4">
                 <?php if (file_exists(__DIR__ . '/logo.png')): ?>
                     <img src="logo.png" alt="ตราวิทยาลัยเทคนิคสุพรรณบุรี" class="h-16 w-16 object-contain">
                 <?php else: ?>
@@ -101,30 +146,33 @@ $userName = $_SESSION['full_name'] ?? 'เกม';
                     <div class="text-lg font-bold text-[#14234c] sm:text-xl">ระบบจองห้องประชุมและห้องคอมพิวเตอร์</div>
                     <div class="text-sm font-medium text-blue-700 underline sm:text-base">Meeting Room Booking System</div>
                 </div>
-            </div>
+            </a>
 
-            <nav class="hidden md:flex items-center gap-10 text-base font-medium text-[#14234c] sm:text-lg">
-                <a href="teacher_dashboard.php" class="text-blue-700 font-semibold">หน้าหลัก</a>
-                <a href="my_bookings.php" class="hover:text-blue-700">ประวัติการจอง</a>
-                <a href="contact.php" class="hover:text-blue-700">ติดต่อเรา</a>
-            </nav>
+            <div class="flex items-center gap-6 sm:gap-8">
+                <nav class="hidden md:flex items-center gap-6 text-base font-medium text-[#14234c]">
+                    <a href="teacher_dashboard.php" class="rounded-lg bg-[#c4c4c4] px-5 py-2.5 font-semibold text-[#14234c]">หน้าหลัก</a>
+                    <a href="my_bookings.php" class="rounded-lg px-4 py-2 hover:bg-slate-100 hover:text-blue-700">ประวัติการจอง</a>
+                </nav>
 
-            <!-- Profile Dropdown -->
-            <div class="relative">
-                <button type="button" onclick="toggleProfileMenu()"
-                        class="flex items-center gap-3 rounded bg-slate-200 px-5 py-3 text-base font-medium text-slate-900 hover:bg-slate-300">
-                    <span class="inline-flex h-8 w-8 items-center justify-center rounded-full bg-slate-700 text-sm text-white">👤</span>
-                    <span><?= htmlspecialchars($userName, ENT_QUOTES, 'UTF-8') ?></span>
-                    <span id="profile_arrow">⌄</span>
-                </button>
+                <!-- Profile Dropdown -->
+                <div class="relative inline-block">
+                    <button type="button" onclick="toggleProfileMenu()"
+                            class="flex w-full items-center justify-between gap-3 rounded bg-slate-100 px-4 py-2.5 text-base font-medium text-slate-900 hover:bg-slate-200">
+                        <span class="flex items-center gap-2.5">
+                            <span class="inline-flex h-8 w-8 items-center justify-center rounded-full bg-slate-800 text-sm text-white">👤</span>
+                            <span><?= htmlspecialchars($userName, ENT_QUOTES, 'UTF-8') ?></span>
+                        </span>
+                        <span id="profile_arrow">⌄</span>
+                    </button>
 
-                <div id="profile_menu" class="hidden absolute right-0 z-30 w-52 shadow-md">
-                    <a href="profile.php" class="block bg-slate-200 px-4 py-3.5 text-center text-base font-medium text-slate-900 hover:bg-slate-300">
-                        ข้อมูลส่วนตัว
-                    </a>
-                    <a href="logout.php" class="block bg-[#e05252] px-4 py-3.5 text-center text-base font-medium text-white hover:bg-red-600">
-                        ออกจากระบบ
-                    </a>
+                    <div id="profile_menu" class="hidden absolute left-0 right-0 z-30 w-full shadow-md">
+                        <a href="profile.php" class="block w-full bg-slate-200 px-4 py-3 text-center text-sm font-medium text-slate-900 hover:bg-slate-300">
+                            ข้อมูลส่วนตัว
+                        </a>
+                        <a href="logout.php" class="block w-full bg-[#e05252] px-4 py-3 text-center text-sm font-medium text-white hover:bg-red-600">
+                            ออกจากระบบ
+                        </a>
+                    </div>
                 </div>
             </div>
         </div>
@@ -139,112 +187,75 @@ $userName = $_SESSION['full_name'] ?? 'เกม';
     </section>
 
     <!-- Main Content -->
-    <main class="mx-auto w-full max-w-7xl flex-1 px-6 py-10 sm:px-8">
+    <main class="mx-auto w-full max-w-7xl flex-1 px-6 py-8 sm:px-8">
 
-        <!-- Blue Filter Bar -->
-        <form action="teacher_dashboard.php" method="get"
-              class="rounded-xl bg-[#3874c9] p-6 text-white shadow-sm">
-            <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4">
-                <div>
-                    <label for="room_type" class="mb-2 block text-sm font-medium text-white">ประเภทห้อง</label>
-                    <select id="room_type" name="room_type"
-                            class="w-full rounded-md bg-white px-3.5 py-2.5 text-sm text-slate-900 outline-none">
-                        <option value="all" <?= $roomType === 'all' ? 'selected' : '' ?>>All</option>
-                        <option value="ประชุม" <?= $roomType === 'ประชุม' ? 'selected' : '' ?>>Meeting (ห้องประชุม)</option>
-                        <option value="คอมพิวเตอร์" <?= $roomType === 'คอมพิวเตอร์' ? 'selected' : '' ?>>Computer (ห้องคอมพิวเตอร์)</option>
-                    </select>
-                </div>
-
-                <div>
-                    <label for="booking_date" class="mb-2 block text-sm font-medium text-white">วันที่ต้องการจอง</label>
-                    <input id="booking_date" name="booking_date" type="date"
-                           value="<?= htmlspecialchars($bookingDate, ENT_QUOTES, 'UTF-8') ?>"
-                           class="w-full rounded-md bg-white px-3.5 py-2.5 text-sm text-slate-900 outline-none">
-                </div>
-
-                <div>
-                    <label for="time_slot" class="mb-2 block text-sm font-medium text-white">เวลา</label>
-                    <select id="time_slot" name="time_slot"
-                            class="w-full rounded-md bg-white px-3.5 py-2.5 text-sm text-slate-900 outline-none">
-                        <option value="" <?= $timeSlot === '' ? 'selected' : '' ?>>เลือกเวลา</option>
-                        <option value="09:00 - 11:00" <?= $timeSlot === '09:00 - 11:00' ? 'selected' : '' ?>>09:00 - 11:00</option>
-                        <option value="11:00 - 13:00" <?= $timeSlot === '11:00 - 13:00' ? 'selected' : '' ?>>11:00 - 13:00</option>
-                        <option value="13:00 - 15:00" <?= $timeSlot === '13:00 - 15:00' ? 'selected' : '' ?>>13:00 - 15:00</option>
-                        <option value="15:00 - 17:00" <?= $timeSlot === '15:00 - 17:00' ? 'selected' : '' ?>>15:00 - 17:00</option>
-                    </select>
-                </div>
-
-                <div>
-                    <label for="capacity" class="mb-2 block text-sm font-medium text-white">จำนวนคน</label>
-                    <select id="capacity" name="capacity"
-                            class="w-full rounded-md bg-white px-3.5 py-2.5 text-sm text-slate-900 outline-none">
-                        <option value="" <?= $capacityFilter === '' ? 'selected' : '' ?>>จำนวนคน</option>
-                        <option value="10" <?= $capacityFilter === '10' ? 'selected' : '' ?>>10 คนขึ้นไป</option>
-                        <option value="20" <?= $capacityFilter === '20' ? 'selected' : '' ?>>20 คนขึ้นไป</option>
-                        <option value="30" <?= $capacityFilter === '30' ? 'selected' : '' ?>>30 คนขึ้นไป</option>
-                        <option value="50" <?= $capacityFilter === '50' ? 'selected' : '' ?>>50 คนขึ้นไป</option>
-                    </select>
-                </div>
-            </div>
+        <!-- Room Type Filter Bar -->
+        <form method="get" action="teacher_dashboard.php" class="mb-8 rounded-2xl bg-[#3573d4] px-6 py-5 shadow-sm">
+            <label for="room_type" class="mb-2 block text-sm font-semibold text-white">ประเภทห้อง</label>
+            <select id="room_type" name="room_type" onchange="this.form.submit()"
+                    class="w-full max-w-sm rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-900 outline-none focus:border-blue-600">
+                <option value="all" <?= $selectedType === 'all' ? 'selected' : '' ?>>ทั้งหมด</option>
+                <option value="ห้องประชุม" <?= $selectedType === 'ห้องประชุม' ? 'selected' : '' ?>>ห้องประชุม</option>
+                <option value="ห้องคอมพิวเตอร์" <?= $selectedType === 'ห้องคอมพิวเตอร์' ? 'selected' : '' ?>>ห้องคอมพิวเตอร์</option>
+            </select>
         </form>
 
-        <!-- Room Cards Grid -->
-        <div class="mt-9 grid grid-cols-1 gap-8 md:grid-cols-2">
-            <?php if (empty($rooms)): ?>
-                <div class="col-span-2 rounded-xl bg-white p-10 text-center text-base text-slate-600 shadow-sm">
-                    ไม่พบห้องที่ตรงกับเงื่อนไขที่เลือก
-                </div>
-            <?php else: ?>
-                <?php foreach ($rooms as $room): ?>
+        <!-- Rooms Grid -->
+        <?php if (empty($rooms)): ?>
+            <div class="rounded-2xl bg-white p-12 text-center text-slate-500 shadow-sm border border-slate-200">
+                ไม่พบข้อมูลห้องที่ตรงกับประเภทที่เลือก
+            </div>
+        <?php else: ?>
+            <div class="grid grid-cols-1 gap-7 md:grid-cols-2">
+                <?php foreach ($rooms as $rm): ?>
                     <?php
-                        $roomId = (int) $room['id'];
-                        $roomName = htmlspecialchars($room['room_name'] ?? '', ENT_QUOTES, 'UTF-8');
-                        $roomImageRaw = trim($room['room_image'] ?? '');
-                        $hasLocalImage = $roomImageRaw !== '' && file_exists(__DIR__ . '/' . ltrim($roomImageRaw, '/'));
-                        $isUrlImage = preg_match('/^https?:\/\//i', $roomImageRaw) === 1;
-
-                        $bookUrl = 'book_room.php?room_id=' . $roomId;
-                        if ($bookingDate !== '') {
-                            $bookUrl .= '&date=' . urlencode($bookingDate);
-                        }
-                        if ($timeSlot !== '') {
-                            $bookUrl .= '&time=' . urlencode($timeSlot);
-                        }
+                        $imgSrc = resolveDashboardRoomImage($rm['room_image']);
+                        $st = getDashboardRoomStatus($rm['status']);
                     ?>
-                    <article class="flex h-full flex-col justify-between rounded-xl bg-white p-6 shadow-sm border border-slate-100">
+                    <div class="overflow-hidden rounded-2xl bg-white p-5 shadow-sm border border-slate-200 flex flex-col justify-between">
                         <div>
-                            <div class="h-64 w-full overflow-hidden rounded-lg bg-slate-200">
-                                <?php if ($hasLocalImage || $isUrlImage): ?>
-                                    <img src="<?= htmlspecialchars($roomImageRaw, ENT_QUOTES, 'UTF-8') ?>"
-                                         alt="<?= $roomName ?>"
-                                         class="h-full w-full object-cover">
+                            <div class="flex h-64 w-full items-center justify-center overflow-hidden rounded-xl bg-slate-100">
+                                <?php if ($imgSrc !== ''): ?>
+                                    <img src="<?= htmlspecialchars($imgSrc, ENT_QUOTES, 'UTF-8') ?>"
+                                         alt="<?= htmlspecialchars($rm['room_name'], ENT_QUOTES, 'UTF-8') ?>"
+                                         class="h-full w-full object-cover"
+                                         onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                                    <span class="hidden text-base font-medium text-slate-500">
+                                        รูปภาพ <?= htmlspecialchars($rm['room_name'], ENT_QUOTES, 'UTF-8') ?>
+                                    </span>
                                 <?php else: ?>
-                                    <div class="flex h-full w-full items-center justify-center bg-slate-200 text-base font-medium text-slate-600">
-                                        รูปภาพ <?= $roomName ?>
-                                    </div>
+                                    <span class="text-base font-medium text-slate-500">
+                                        รูปภาพ <?= htmlspecialchars($rm['room_name'], ENT_QUOTES, 'UTF-8') ?>
+                                    </span>
                                 <?php endif; ?>
                             </div>
 
-                            <h2 class="mt-5 text-xl font-semibold text-slate-900">
-                                <?= $roomName ?>
+                            <h2 class="mt-4 text-xl font-bold text-slate-900">
+                                <?= htmlspecialchars($rm['room_name'], ENT_QUOTES, 'UTF-8') ?>
                             </h2>
                         </div>
 
-                        <div class="mt-5 space-y-3">
-                            <a href="<?= htmlspecialchars($bookUrl, ENT_QUOTES, 'UTF-8') ?>"
-                               class="block w-full rounded-md bg-[#8be3a8] py-3 text-center text-sm font-semibold text-white transition hover:bg-emerald-500 sm:text-base">
-                                จอง
+                        <div class="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                            <a href="Room_information.php?room_id=<?= (int) $rm['id'] ?>"
+                               class="flex w-full items-center justify-center rounded-xl bg-slate-200 py-3 text-base font-semibold text-slate-800 transition hover:bg-slate-300">
+                                ดูรายละเอียด
                             </a>
 
-                            <a href="room_detail.php?room_id=<?= $roomId ?>"
-                               class="block w-full rounded-md bg-[#6495db] py-3 text-center text-sm font-semibold text-white transition hover:bg-blue-600 sm:text-base">
-                                รายละเอียดห้องประชุม
-                            </a>
+                            <?php if ($st['can_book']): ?>
+                                <a href="Reserve.php?room_id=<?= (int) $rm['id'] ?>"
+                                   class="flex w-full items-center justify-center rounded-xl bg-[#7ee687] py-3 text-base font-semibold text-slate-950 transition hover:bg-[#65d970]">
+                                    จองห้อง
+                                </a>
+                            <?php else: ?>
+                                <span class="flex w-full cursor-not-allowed items-center justify-center rounded-xl bg-slate-300 py-3 text-base font-semibold text-slate-500">
+                                    ปิดปรับปรุง
+                                </span>
+                            <?php endif; ?>
                         </div>
-                    </article>
+                    </div>
                 <?php endforeach; ?>
-            <?php endif; ?>
-        </div>
+            </div>
+        <?php endif; ?>
 
     </main>
 

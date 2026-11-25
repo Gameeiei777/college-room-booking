@@ -9,14 +9,14 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 $credential = trim($_POST['credential'] ?? '');
 
 if ($credential === '') {
-    $_SESSION['login_error'] = 'ไม่สามารถเข้าสู่ระบบได้';
+    $_SESSION['login_error'] = 'ผู้ใช้นี้ไม่สามารถเข้าสู่ระบบได้';
     header('Location: index.php');
     exit;
 }
 
 $parts = explode('.', $credential);
 if (count($parts) !== 3) {
-    $_SESSION['login_error'] = 'ไม่สามารถเข้าสู่ระบบได้';
+    $_SESSION['login_error'] = 'ผู้ใช้นี้ไม่สามารถเข้าสู่ระบบได้';
     header('Location: index.php');
     exit;
 }
@@ -28,7 +28,7 @@ $email = strtolower(trim($payload['email'] ?? ''));
 $emailVerified = !empty($payload['email_verified']);
 
 if ($email === '' || !$emailVerified) {
-    $_SESSION['login_error'] = 'ไม่สามารถเข้าสู่ระบบได้';
+    $_SESSION['login_error'] = 'ผู้ใช้นี้ไม่สามารถเข้าสู่ระบบได้';
     header('Location: index.php');
     exit;
 }
@@ -61,6 +61,6 @@ if ($stmt->fetch() && in_array(strtolower(trim((string) $role)), ['admin', 'teac
 }
 
 $stmt->close();
-$_SESSION['login_error'] = 'ไม่สามารถเข้าสู่ระบบได้';
+$_SESSION['login_error'] = 'ผู้ใช้นี้ไม่สามารถเข้าสู่ระบบได้';
 header('Location: index.php');
 exit;

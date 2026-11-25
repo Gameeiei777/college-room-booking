@@ -15,7 +15,7 @@ try {
         $email = is_string($submittedEmail) ? trim($submittedEmail) : '';
 
         if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
-            $loginError = 'ไม่สามารถเข้าสู่ระบบได้';
+            $loginError = 'ผู้ใช้นี้ไม่สามารถเข้าสู่ระบบได้';
         } else {
             $stmt = $conn->prepare(
                 'SELECT id, email, full_name, department, role
@@ -46,7 +46,7 @@ try {
             }
 
             $stmt->close();
-            $loginError = 'ไม่สามารถเข้าสู่ระบบได้';
+            $loginError = 'ผู้ใช้นี้ไม่สามารถเข้าสู่ระบบได้';
         }
     }
 } catch (mysqli_sql_exception $exception) {
@@ -60,7 +60,7 @@ try {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-    <title>เข้าสู่ระบบ | วิทยาลัยเทคนิคสุพรรณบุรี</title>
+    <title>เข้าสู่ระบบ วิทยาลัยเทคนิคสุพรรณบุรี</title>
 
     <script src="https://cdn.tailwindcss.com"></script>
 
